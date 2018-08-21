@@ -1,0 +1,102 @@
+import tensorflow as tf
+import numpy as np
+import gym
+import random
+from collections import deque
+
+ENV_NAME='MountainCar-v0'
+
+GAMMA = 0.9
+batch_size = 32
+epsilon = 1
+input_num = 2
+hidden_num = 100
+output_num = 3
+
+if __name__ == '__main__':
+    sess = tf.InteractiveSession()
+
+    input_layer = tf.placeholder(tf.float32, shape=[None, input_num])
+    action_layer = tf.placeholder(tf.float32, shape=[None, output_num])
+    y_layer = tf.placeholder(tf.float32, shape=[None])
+    W1 = tf.Variable(tf.truncated_normal(shape=[input_num, hidden_num], stddev=0.1))
+    b1 = tf.Variable(tf.truncated_normal(shape=[hidden_num], stddev=0.1))
+    tf.summary.histogram('w1',W1)
+    tf.summary.histogram('b1',b1)
+    W2 = tf.Variable(tf.truncated_normal(shape=[hidden_num, output_num], stddev=0.1))
+    b2 = tf.Variable(tf.truncated_normal(shape=[output_num], stddev=0.1))
+    tf.summary.histogram('w2', W2)
+    tf.summary.histogram('b2',b2)
+    hidden_layer = tf.nn.relu(tf.add(tf.matmul(input_layer, W1), b1))
+    output_layer = tf.add(tf.matmul(hidden_layer, W2), b2)
+    value = tf.reduce_sum(tf.multiply(output_layer, action_layer), reduction_indices=1)
+    cost = tf.reduce_mean(tf.square(value - y_layer))
+    tf.summary.scalar('cost',cost)
+    opt = tf.train.RMSPropOptimizer(0.00025,0.99,0.0,1e-6).minimize(cost)
+    init = tf.global_variables_initializer()
+    sess.run(init)
+    merged = tf.summary.merge_all()
+    env = gym.make(ENV_NAME)
+    action_num = env.action_space.n
+
+    replay_buffer = deque()
+    train_writer = tf.summary.FileWriter('log/train',sess.graph)
+    summary_iter = 0;
+    for i in range(10000):
+        total_reward = 0;
+        state = env.reset()
+
+        for j in range(10000):
+            env.render()
+            if epsilon>0.1:
+                epsilon = epsilon - 0.9/10000
+            if random.uniform(0,1)<epsilon:
+                action = random.randint(0,action_num-1)
+            else:
+                action_value = sess.run(output_layer,feed_dict={input_layer:[state]})[0]
+                # action_value = output_layer.eval(feed_dict={input_layer:[state]})[0]
+                action = np.argmax(action_value)
+            next_state, reward, done, _ = env.step(action)
+            total_reward+=reward
+
+            action_one_hot = np.zeros(shape=[action_num])
+            action_one_hot[action] = 1;
+
+            replay_buffer.append([state,action_one_hot,reward,next_state,done])
+            if len(replay_buffer)>50000:
+                replay_buffer.popleft()
+            if len(replay_buffer)>200:
+                mini_batch = random.sample(replay_buffer,batch_size)
+                state_batch = [data[0] for data in mini_batch]
+                action_one_hot_batch = [data[1] for data in mini_batch]
+                reward_batch = [data[2] for data in mini_batch]
+                next_state_batch = [data[3] for data in mini_batch]
+                done_batch = [data[4] for data in mini_batch]
+
+                y_batch = []
+
+                next_state_reward = sess.run(output_layer,feed_dict={ input_layer:np.array(next_state_batch)})
+
+                for k in range(batch_size):
+                    if done_batch[k]:
+                        y_batch.append(reward_batch[k])
+                    else:
+                        y_batch.append(reward_batch[k]+GAMMA*np.max(next_state_reward[k]))
+                sess.run(opt,feed_dict={input_layer:state_batch,
+                                        action_layer:action_one_hot_batch,
+                                        y_layer:y_batch})
+                if summary_iter % 100 == 0:
+                    summary,_ = sess.run([merged,cost], feed_dict={input_layer: state_batch,
+                                                            action_layer: action_one_hot_batch,
+                                                            y_layer: y_batch})
+                    train_writer.add_summary(summary, summary_iter)
+                summary_iter+=1
+            if done:
+                break;
+            state = next_state
+
+        print('total_reward', total_reward)
+
+
+
+
